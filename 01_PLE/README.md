@@ -58,3 +58,39 @@ Tu programa debe generar un archivo de texto (ej. problema.out) con los resultad
 2. Siguientes M líneas: La asignación para cada paquete (del 0 al M-1). Cada línea contendrá el id_paquete y el id_ubicacion asignada.
     * El id_ubicacion será el índice del nodo (de 0 a N-1).
     * El id_ubicacion será -1 para indicar que fue asignado al Service Center.
+
+## Solución:
+
+Cada paquete $j \in J$ puede ser entregado por:
+* El SC a un costo promedio $S$
+* El nodo $i$ a un costo fijo $C_i$
+
+Pero podemos interpretar al SC como un nodo con capacidad infinita (basta con capacidad $M$) y costo $S$ para facilitar algunas restricciones.
+
+Notamos $I^+$ al conjunto de nodos extendido con el SC representado como nodo:
+
+$c_n = S  \\
+k_n = M \\
+a_{nj} = 1 \forall j \in J
+$
+
+
+Notamos $b_{ij} = 1$ si el nodo $i$ entrega el paquete $j$ y, $b_{ij} = 0$ en otro caso.
+
+### Minimizamos:
+
+$Z= \sum_{i \in I^+}{
+    \sum_{j \in J}{
+        b_{ij}*c_i
+    }
+}$
+
+### Restricciones:
+
+* Cada paquete se entrega por exactamente 1 nodo:
+
+    $1 = \sum_{i \in I^+}(b_{ij}) \\ \forall j \in J$
+
+* Cada nodo no entrega más paquetes que su capacidad lo permite:
+
+    $k_i \geq \sum_{j \in J}(b_{ij}) \\ \forall i \in I^+$
