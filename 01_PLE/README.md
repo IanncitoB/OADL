@@ -94,3 +94,7 @@ $Z= \sum_{i \in I^+}{
 * Cada nodo no entrega más paquetes que su capacidad lo permite:
 
     $k_i \geq \sum_{j \in J}(b_{ij}) \\ \forall i \in I^+$
+
+* Solo se entregan paquetes dentro del área cubierta por el nodo:
+
+    $b_{ij} \leq a_{ij} \\ \forall i \in I^+ \\ \forall j \in J$
