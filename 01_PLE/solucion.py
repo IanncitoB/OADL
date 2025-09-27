@@ -36,7 +36,10 @@ def solve(n, m, nodos, cobertura):
     for j in range(m):
         for i in range(n+1):
             if value(b[i, j]) == 1:
-                print(f"{j} {i}")
+                if i < n:
+                    print(f"{j} {i}")
+                else:
+                    print(f"{j} {-1}")
                 break
 
 
