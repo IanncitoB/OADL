@@ -1,126 +1,129 @@
-# 02_RUTEO/assignments+vrp.py
-from typing import List, NamedTuple, Tuple, Dict, Optional
+# 02_RUTEO/assignments_vrp.py
+from typing import List, Tuple, Dict, Optional
+import math
 import numpy as np
 from pulp import (
-    LpProblem, LpVariable, LpMinimize, lpSum, value, PULP_CBC_CMD, LpStatus
+    LpProblem, LpVariable, LpMinimize, lpSum, value, PULP_CBC_CMD, LpStatus, LpInteger
 )
-
-
-class Nodo(NamedTuple):
-    capacidad: int
-    costo: float
-    posicion: Tuple[int,int]
 
 class PackageSolver:
     """
-    Clase para resolver el problema de asignación de paquetes a clientes, considerando sus rutas.
+    Solver de asignación con estimación de costos de ruteo.
 
-    Constructor arguments:
-        nodos: lista de dicts con keys 'capacidad' (int), 'costo' (float) y 'posicion' (int,int).
-                Debe incluir el Service Center como último elemento (índice n).
-                Longitud esperada: n+1 (último es Service Center).
-        paquetes_coordenadas: lista de posiciones (int,int) del destino de los paquetes.
-                Longitud esperada: m
-        cobertura: matriz booleana (n+1, m) indicando si nodo i cubre paquete j.
-                   Acepta numpy array o lista de listas; se convertirá a np.bool_.
-    Solver options:
-        solver_msg: bool, si True muestra mensajes del solver CBC.
+    nodos: lista de dicts {'capacidad': int, 'costo': float, 'posicion': (x,y)}
+           Debe incluir el Service Center como último elemento (índice n).
+    paquetes_coordenadas: lista de tuplas (x,y) de longitud m
+    cobertura: array booleano shape (n+1, m)
+    kv: capacidad de cada vehículo (paquetes por vehículo)
+    cfv: costo fijo por vehículo
+    cvp: costo variable por distancia por paquete
+    alpha: hiperparámetro en (0, 1]. Penalización por elección de nodos lejanos al cliente
     """
-
     def __init__(
         self,
-        nodos: List[Nodo],
-        paquetes_coordenadas: List[Tuple[int,int]],
+        nodos: List[Dict],
+        paquetes_coordenadas: List[Tuple[float,float]],
         cobertura,
-        solver_msg: bool = False
+        kv: int = 1,
+        cfv: float = 0.0,
+        cvp: float = 0.0,
+        solver_msg: bool = False,
+        alpha: float = 1.0
     ):
-        self.n = n = len(nodos) - 1
-        self.m = m = len(paquetes_coordenadas)
+        self.n = len(nodos) - 1  # número de nodos locales (service center = índice n)
+        self.m = len(paquetes_coordenadas)
         self.nodos = nodos
+        self.kv = kv
+        assert kv > 0
+        self.alpha = alpha
+        self.cfv = cfv
+        self.cvp = cvp
 
-        # cobertura -> numpy boolean array shape (n+1, m)
         cov = np.array(cobertura, dtype=bool)
-        if cov.shape != (n + 1, m):
-            raise ValueError(f"La cobertura debe tener forma ({n+1}, {m}), pero tiene {cov.shape}.")
+        if cov.shape != (self.n + 1, self.m):
+            raise ValueError(f"La cobertura debe tener forma ({self.n+1}, {self.m}), pero tiene {cov.shape}.")
         self.cobertura = cov
+        self.paquetes = paquetes_coordenadas
         self.solver_msg = solver_msg
 
-        # Variables internas llenadas en solve()
         self._model = None
         self._b_vars = None
+        self._v_vars = None
         self.status = None
-    
-    def __modelo_init(self):
-        """
-        Inicializa el modelo de asignación de paquetes.
-        Considera:
-            - Restricciones de capacidad
-            - Restricciones de cobertura
-        NO considera:
-            - Distancias entre nodos
-            - Costos de vehículos
-            - Ruteo
-        """
-        modelo = LpProblem("Entrega_De_Paquetes", LpMinimize)
 
-        # Variables binarias b[i,j]
-        b = LpVariable.dicts("b", ((i, j) for i in range(self.n + 1) for j in range(self.m)),
-                             cat='Binary')
+    def _distance(self, nodo_idx: int, paquete_idx: int) -> float:
+        nx, ny = self.nodos[nodo_idx]['posicion']
+        px, py = self.paquetes[paquete_idx]
+        return math.hypot(nx - px, ny - py)
 
-        # Función objetivo: minimizar costo total
-        modelo += lpSum(self.nodos[i]['costo'] * lpSum(b[i, j] for j in range(self.m))
-                        for i in range(self.n + 1)), "Costo_Total"
+    def solve(self) -> Dict:
+        modelo = LpProblem("Asignacion_con_VRP_approx", LpMinimize)
 
-        # Restricción 1: cada paquete entregado exactamente 1 vez
+        # Variables de decisión: b_ij = 1 si el nodo i entrega el paquete j
+        b = LpVariable.dicts("b", ((i, j) for i in range(self.n + 1) for j in range(self.m)), cat='Binary')
+
+        # v[i] entero >=0: cantidad de vehículos usados por nodo i
+        v = LpVariable.dicts("v", (i for i in range(self.n + 1)), lowBound=0, cat=LpInteger)
+
+        # Objetivo:
+        #   costo asignacion nodo (por paquete) + costo fijo por vehiculo + costo variable por distancia
+        costo_asignacion = lpSum(self.nodos[i]['costo'] * lpSum(b[i, j] for j in range(self.m))
+                                 for i in range(self.n + 1))
+        costo_fijo_vehiculos = lpSum(self.cfv * v[i] for i in range(self.n + 1))
+        # En el peor caso, el ruteo resulta de un viaje por paquete (ida y vuelta)
+        # Esta desición entiendo que penaliza enviar paquetes demasiado lejos, salvo que el costo de asignación sea muy bajo y compense
+        # La elección del alpha es crucial para que relaje esta restricción y pueda explorar asignaciones lejanas
+        costo_distancias = lpSum(self.cvp * self._distance(i, j) * b[i, j] * 2 * self.alpha
+                                 for i in range(self.n + 1) for j in range(self.m))
+
+        # Definición de la función objetivo: minimizar el costo total
+        modelo += (costo_asignacion + costo_fijo_vehiculos + costo_distancias), "Costo_Total_AproxVRP"
+
+        # Restricción: cada paquete exactamente una vez
         for j in range(self.m):
-            modelo += lpSum(b[i, j] for i in range(self.n + 1)) == 1, f"Entrega_Unica_Paquete_{j}"
+            modelo += lpSum(b[i, j] for i in range(self.n + 1)) == 1, f"EntregaUnica_{j}"
 
-        # Restricción 2: capacidades de los nodos
+        # Restricción: capacidades físicas de nodos
         for i in range(self.n + 1):
-            modelo += lpSum(b[i, j] for j in range(self.m)) <= self.nodos[i]['capacidad'], f"Capacidad_Nodo_{i}"
+            modelo += lpSum(b[i, j] for j in range(self.m)) <= self.nodos[i]['capacidad'], f"CapacidadNodo_{i}"
 
-        # Restricción 3: cobertura
+        # Relacion v[i] con paquetes: sum_j b[i,j] <= kv * v[i]
+        for i in range(self.n + 1):
+            modelo += lpSum(b[i, j] for j in range(self.m)) <= self.kv * v[i], f"VehiculosSuf_{i}"
+
+        # Cobertura
         for i in range(self.n + 1):
             for j in range(self.m):
                 if not self.cobertura[i, j]:
-                    # si no cubre, entonces b[i,j] <= 0  => b[i,j] == 0 (por binaria)
-                    modelo += b[i, j] <= 0, f"Cobertura_Nodo_{i}_Paquete_{j}"
-                # si cubre, no hay restricción adicional
-        return modelo, b
+                    modelo += b[i, j] <= 0, f"Cobertura_{i}_{j}"
 
-    def solve(self) -> Dict:
-        """
-        Resuelve el modelo y devuelve un diccionario con:
-            - 'status': estado del solver (string)
-            - 'costo_minimo': float (o None si no tiene solución)
-            - 'assignments': lista de longitud n+1 que contiene listas de id_paquetes a ser entregados por cada nodo
-            - 'routes': lista de lista de todas las rutas que hace cada nodo:
-                        ruta = List[Tuple[int,int]]
-        Lanza excepción si el modelo es infeasible o no optimal.
-        """
-        modelo, b = self.__modelo_init()
-
-        # Resolver primero minimizando el costo de asignación (sin importar ruteo)
+        # Resolver
         solver = PULP_CBC_CMD(msg=self.solver_msg)
         modelo.solve(solver)
 
         self._model = modelo
         self._b_vars = b
+        self._v_vars = v
         self.status = LpStatus[modelo.status]
 
-        # Si no es optimal/feasible, no resolvemos ruteo
         if self.status not in ("Optimal", "Feasible"):
-            return {"status": self.status, "costo_minimo": None, "assignments": None, "routes": None}
+            return {"status": self.status, "costo_minimo": None, "assignments": None, "vehicle_count": None}
 
-        costo_asignacion = float(value(modelo.objective))
-        
-        # Para cada nodo k, devuelve la lista de paquetes que tiene asignado
-        assignments = [
-                        [paq for (paq,value) in enumerate(b[k]) if value] 
-                    for k in range(len(b))
-                    ]
+        costo_val = float(value(modelo.objective))
 
-        costo_total = costo_asignacion + 0 # Completar con costo de VRP
-        routes = None 
-        return {"status": self.status, "costo_minimo": costo_total, "assignments": assignments, 'routes': routes}
+        assignments: List[int] = [-2] * self.m
+        for j in range(self.m):
+            assigned = None
+            for i in range(self.n + 1):
+                val = value(b[(i, j)])
+                if val is not None and round(val) == 1:
+                    assigned = i
+                    break
+            if assigned is None:
+                assignments[j] = None
+            else:
+                assignments[j] = assigned if assigned < self.n else -1  # -1 para Service Center
 
+        vehicle_count = [int(round(value(v[i]))) if value(v[i]) is not None else 0 for i in range(self.n + 1)]
+
+        return {"status": self.status, "costo_minimo": costo_val, "assignments": assignments, "vehicle_count": vehicle_count}
