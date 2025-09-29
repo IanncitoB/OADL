@@ -1,10 +1,15 @@
 # 02_RUTEO/assignments+vrp.py
-from typing import List, Tuple, Dict, Optional
+from typing import List, NamedTuple, Tuple, Dict, Optional
 import numpy as np
 from pulp import (
     LpProblem, LpVariable, LpMinimize, lpSum, value, PULP_CBC_CMD, LpStatus
 )
 
+
+class Nodo(NamedTuple):
+    capacidad: int
+    costo: float
+    posicion: Tuple[int,int]
 
 class PackageSolver:
     """
@@ -24,7 +29,7 @@ class PackageSolver:
 
     def __init__(
         self,
-        nodos: List[Dict[str, float, Tuple[int,int]]],
+        nodos: List[Nodo],
         paquetes_coordenadas: List[Tuple[int,int]],
         cobertura,
         solver_msg: bool = False
@@ -44,16 +49,17 @@ class PackageSolver:
         self._model = None
         self._b_vars = None
         self.status = None
-
-    def solve(self) -> Dict:
+    
+    def __modelo_init(self):
         """
-        Resuelve el modelo y devuelve un diccionario con:
-            - 'status': estado del solver (string)
-            - 'costo_minimo': float (o None si no tiene solución)
-            - 'assignments': lista de longitud n+1 que contiene listas de id_paquetes a ser entregados por cada nodo
-            - 'routes': lista de lista de todas las rutas que hace cada nodo:
-                        ruta = List[Tuple[int,int]]
-        Lanza excepción si el modelo es infeasible o no optimal.
+        Inicializa el modelo de asignación de paquetes.
+        Considera:
+            - Restricciones de capacidad
+            - Restricciones de cobertura
+        NO considera:
+            - Distancias entre nodos
+            - Costos de vehículos
+            - Ruteo
         """
         modelo = LpProblem("Entrega_De_Paquetes", LpMinimize)
 
@@ -80,9 +86,22 @@ class PackageSolver:
                     # si no cubre, entonces b[i,j] <= 0  => b[i,j] == 0 (por binaria)
                     modelo += b[i, j] <= 0, f"Cobertura_Nodo_{i}_Paquete_{j}"
                 # si cubre, no hay restricción adicional
+        return modelo, b
+
+    def solve(self) -> Dict:
+        """
+        Resuelve el modelo y devuelve un diccionario con:
+            - 'status': estado del solver (string)
+            - 'costo_minimo': float (o None si no tiene solución)
+            - 'assignments': lista de longitud n+1 que contiene listas de id_paquetes a ser entregados por cada nodo
+            - 'routes': lista de lista de todas las rutas que hace cada nodo:
+                        ruta = List[Tuple[int,int]]
+        Lanza excepción si el modelo es infeasible o no optimal.
+        """
+        modelo, b = self.__modelo_init()
 
         # Resolver primero minimizando el costo de asignación (sin importar ruteo)
-        solver = PULP_CBC_CMD(msg=1 if self.solver_msg else 0)
+        solver = PULP_CBC_CMD(msg=self.solver_msg)
         modelo.solve(solver)
 
         self._model = modelo
@@ -104,19 +123,4 @@ class PackageSolver:
         costo_total = costo_asignacion + 0 # Completar con costo de VRP
         routes = None 
         return {"status": self.status, "costo_minimo": costo_total, "assignments": assignments, 'routes': routes}
-
-    def solve_and_print(self, case_name: Optional[str] = None) -> None:
-        """
-        Ejecuta solve() e imprime el resultado en el formato similar al script original.
-        """
-        res = self.solve()
-        if case_name:
-            print(case_name)
-        if res["costo_minimo"] is None:
-            print("No se encontró solución óptima (status: {})".format(res["status"]))
-            return
-        print(f"{res['costo_minimo']:.2f}")
-        for j, i in enumerate(res["assignments"]):
-            # si i == -1 => Service Center
-            print(f"{j} {i}")
 
