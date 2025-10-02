@@ -11,9 +11,10 @@ import matplotlib.pyplot as plt
 # Hiperparámetros
 PACKAGE_SOLVER_VERBOSE      = False     # Mensajes de librería PuLP
 ROUTING_SOLVER_VERBOSE      = False     # Mensajes de librería pyVRP
-ROUTING_SOLVER_MAX_RUNTIME  = 5         # 5 segundos por nodo
-PLOTTING_NODE_ROUTES        = False     # Rutas de cada nodo
+ROUTING_SOLVER_MAX_RUNTIME  = 1         # 1 segundo por nodo
+PLOTTING_NODE_ROUTES        = True     # Rutas de cada nodo
 PLOTTING_ALL_ROUTES         = False     # Rutas de todos los nodos
+ALPHA_EVALUATION_VERBOSE    = False      # Mensajes búsqueda del alpha óptimo
 alpha_values = np.linspace(start=0, stop=2, num=20) # 20 valores en [0, 2] uniformemente espaciados
 
 def solve_routing(n, m, nodos_coordenadas, paquetes_coordenadas, assignments, kv, cfv, cvp):
@@ -23,12 +24,13 @@ def solve_routing(n, m, nodos_coordenadas, paquetes_coordenadas, assignments, kv
     paquetes_por_nodo = {}
     for j, i in enumerate(assignments):
         # i == -1 => Service Center (último nodo)
-        node_idx = i if i >= 0 else n
-        paquetes_por_nodo.setdefault(node_idx, []).append(j)
+        nodo_idx = i if i >= 0 else n
+        paquetes_por_nodo.setdefault(nodo_idx, []).append(j)
 
     models = []
     total_routing_cost = 0.0
-    all_routes = []
+    vehicles_used = 0
+    all_routes = {}
     for nodo_idx, paquetes in paquetes_por_nodo.items():
         # Si no hay paquetes, saltar
         if len(paquetes) == 0:
@@ -58,43 +60,19 @@ def solve_routing(n, m, nodos_coordenadas, paquetes_coordenadas, assignments, kv
 
         models.append((model, res))
 
-        best = res.best
-
-        # --- Extracción robusta de rutas (para distintas versiones de pyvrp) ---
-        routes = None
-        try:
-            if hasattr(best, "routes"):
-                attr = best.routes
-                routes = attr() if callable(attr) else attr
-            elif hasattr(best, "solution"):
-                attr = best.solution
-                routes = attr() if callable(attr) else attr
-            else:
-                # buscar en los names del objeto algo parecido a 'route' o 'routes'
-                candidate = None
-                for name in dir(best):
-                    if "route" in name.lower():
-                        candidate = getattr(best, name)
-                        break
-                if candidate is not None:
-                    routes = candidate() if callable(candidate) else candidate
-        except Exception:
-            routes = None
-
-        # intentar obtener costo directamente (si existe)
-        route_cost = getattr(best, "cost", None)
-        if route_cost is None:
-            route_cost = getattr(best, "objective", None)
-        if route_cost is None:
-            route_cost = getattr(best, "distance_cost", None)
+        best = res.best    
+        routes = best.routes()
+        
+        route_cost = getattr(best, "distance_cost", None)
         if route_cost is None:
             route_cost = getattr(best, "distance", None)
-        if route_cost is None:
-            route_cost = getattr(best, "value", None)
         
         route_cost = route_cost() if callable(route_cost) else route_cost
         
-        all_routes += routes
+        vehicles_used += sum([route.num_trips() for route in routes])
+        if not nodo_idx in all_routes.keys():
+            all_routes[nodo_idx] = []
+        all_routes[nodo_idx] += routes
 
         total_routing_cost += float(route_cost)
         # PLOT rutas por nodo
@@ -125,10 +103,9 @@ def solve_routing(n, m, nodos_coordenadas, paquetes_coordenadas, assignments, kv
         else:
             print("[DBG]\tNo se encontró solución de ruteo para ningún nodo.")
 
-    vehicles_used = len(all_routes)
     total_routing_cost += vehicles_used * cvp
 
-    return total_routing_cost, vehicles_used, all_routes
+    return total_routing_cost, all_routes
 
 
 if __name__ == '__main__':
@@ -138,7 +115,7 @@ if __name__ == '__main__':
     output_file = input_file.replace('.in', '.out')
     if len(sys.argv) > 2:
         output_file = sys.argv[2]
-    # sys.stdout = open(output_file, 'w')
+    sys.stdout = open(output_file, 'w')
     caso = 1
     with open(input_file, 'r') as f:
         n, m = map(int, f.readline().strip().split()) # número de nodos, número de paquetes
@@ -166,8 +143,8 @@ if __name__ == '__main__':
             cobertura[n, :] = True
 
             # BLOQUE 2: Ruteo
-            kv = int(f.readline().strip())
-            cfv, cvp = map(float, f.readline().strip().split())
+            kv = int(f.readline().strip()) # capacidad del vehículo
+            cfv, cvp = map(float, f.readline().strip().split()) # costo fijo vehículo, costo variable paquete
 
             nodos_coordenadas = [(0,0)] * (n + 1)
             for _ in range(n + 1):
@@ -205,32 +182,38 @@ if __name__ == '__main__':
                     print(f"[DBG]\talpha={alpha:.6g}: no se obtuvo solución ({status}).")
                     continue
             
-                # print(result)
                 assignments = result['assignments']
                 key = tuple(assignments)
                 if key not in unique_assignments:
                     costo_asignacion = result['costo_asignacion']
-                    costo_ruteo, vehicles_used, routes = solve_routing(n, m, nodos_coordenadas, paquetes_coordenadas, assignments, kv, cfv, cvp)
+                    costo_ruteo, all_routes = solve_routing(n, m, nodos_coordenadas, paquetes_coordenadas, assignments, kv, cfv, cvp)
                     costo_total = costo_asignacion + costo_ruteo
                     unique_assignments[key] = {
                         'alphas': [alpha],
                         'costo_asignacion': costo_asignacion,
                         'costo_ruteo': costo_ruteo,
                         'costo_total': costo_total,
-                        'vehicles_used': vehicles_used,
-                        'routes': routes
+                        'routes': all_routes
                     }
-                    print(f"[NEW] alpha={alpha:.6g} -> (costo_asign={costo_asignacion:.2f}, costo_ruteo={costo_ruteo:.2f})\t\ttotal: {costo_total}")
+                    if ALPHA_EVALUATION_VERBOSE:
+                        print(f"[NEW] alpha={alpha:.6g} -> (costo_asign={costo_asignacion:.2f}, costo_ruteo={costo_ruteo:.2f})\t\ttotal: {costo_total}")
                     if best is None or unique_assignments[best]['costo_total'] > costo_total:
-                        print('Actualizado best')
                         best = key
                 else:
                     unique_assignments[key]['alphas'].append(alpha)
-                    print(f"[HIT] alpha={alpha:.6g} -> ({len(unique_assignments[key]['alphas'])} alphas)\t\t\t\t\ttotal: {unique_assignments[key]['costo_total']}")
-
-            print(f'BEST {best}: {unique_assignments[best]}')
+                    if ALPHA_EVALUATION_VERBOSE:
+                        print(f"[HIT] alpha={alpha:.6g} -> ({len(unique_assignments[key]['alphas'])} alphas)\t\t\t\t\ttotal: {unique_assignments[key]['costo_total']}")
 
             print(unique_assignments[best]['costo_total'])
-            print()
+            best_all_routes = unique_assignments[best]['routes']
+            len(best_all_routes)
+
+            for node, routes in best_all_routes.items():
+                if node == n:
+                    print(-1, len(routes))
+                else:
+                    print(node, len(routes))
+                for route in routes:
+                    print(*route.visits())
             caso += 1
             n, m = map(int, f.readline().strip().split())
