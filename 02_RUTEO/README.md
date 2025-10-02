@@ -115,7 +115,7 @@ Para asignar los paquetes a cada nodo proveedor utilizamos la librería ```PuLP`
 
         $b_{ij} \leq a_{ij} \\ \forall i \in I^+ \\ \forall j \in J$
     
-    - ```Nueva``` cada nodo entrega tantos paquetes como sean posibles distribuirlos en los vehículos contratados:
+    - ```Nueva``` cada nodo no entrega más paquetes que los que quepan en sus vehículos contratados:
 
         $\sum_{j \in J}(b_{ij}) \leq kv * v_i \\ \forall i \in I^+$
 
@@ -140,3 +140,23 @@ Utilizando la librería ```pyvrp```, resolvemos el ruteo de cada nodo agregando:
     - Cada arista tiene peso ```distancia * cvp```
 
 Opcionalmente se pueden graficar las rutas de cada nodo y de todos los nodos en simultáneo.
+
+### Juntando:
+
+1) Exploramos diferentes valores de $\alpha$ para obtener varias asignaciones candidatas. Notar que valores $\alpha$ cercanos entre sí, suelen repetir asignaciones. 
+
+2) Para cada asignación candidata, se calcula el ruteo óptimo.
+
+3) Nos quedamos con aquella asignación + ruteo que sea más conveniente
+
+### Gráficos e información:
+
+En ```solucion.py``` se encuentran hiperparámetros configurables que ayudan la visualización del problema.
+
+**Altamente** recomendable utilizar:
+     
+```PLOTTING_NODE_ROUTES = True```
+
+```PLOTTING_NODE_ROUTES = True```
+
+```ALPHA_EVALUATION_VERBOSE = True```
