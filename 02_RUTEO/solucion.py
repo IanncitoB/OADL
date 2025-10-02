@@ -14,8 +14,32 @@ ROUTING_SOLVER_VERBOSE      = False     # Mensajes de librería pyVRP
 ROUTING_SOLVER_MAX_RUNTIME  = 1         # 1 segundo por nodo
 PLOTTING_NODE_ROUTES        = False     # Rutas de cada nodo
 PLOTTING_ALL_ROUTES         = False     # Rutas de todos los nodos
-ALPHA_EVALUATION_VERBOSE    = False      # Mensajes búsqueda del alpha óptimo
+ALPHA_EVALUATION_VERBOSE    = False     # Mensajes búsqueda del alpha óptimo
 alpha_values = np.linspace(start=0, stop=2, num=20) # 20 valores en [0, 2] uniformemente espaciados
+
+# PLOTTING
+def annotate_locations(ax, locations, fontsize=8, zorder=10):
+    """
+    Añade el nombre de cada location en su posición al eje `ax`.
+    `locations` puede ser una lista de objetos con atributos .x, .y, .name
+    o una lista de tuplas (x, y) / (x, y, name).
+    Evita dibujar la misma etiqueta más de una vez.
+    """
+    seen = set()
+    for loc in locations:
+        # obtener x, y, name de forma flexible
+        x = getattr(loc, "x", None)
+        y = getattr(loc, "y", None)
+        name = getattr(loc, "name", None)
+
+        if (x, y) in seen or x is None or y is None:
+            continue
+        seen.add((x, y))
+
+        # dibujar el texto; lo colocamos ligeramente sobre el punto
+        ax.text(x, y, name, fontsize=fontsize, ha='center', va='bottom', zorder=zorder,
+                bbox=dict(boxstyle='round,pad=0.1', fc='white', ec='none', alpha=0.6))
+
 
 def solve_routing(n, m, nodos_coordenadas, paquetes_coordenadas, assignments, kv, cfv, cvp):
     assert n + 1 == len(nodos_coordenadas)
@@ -86,7 +110,12 @@ def solve_routing(n, m, nodos_coordenadas, paquetes_coordenadas, assignments, kv
                 _, axs = plt.subplots(1, 2, figsize=(16, 8))
                 plot_coordinates(model.data(), ax=axs[0])
                 plot_solution(res.best, model.data(), ax=axs[1])
-                plt.title(f'NODO: {nodo_idx}')
+                try:
+                    annotate_locations(axs[0], model.locations)
+                    annotate_locations(axs[1], model.locations)
+                except Exception as e:
+                    print(f"[DBG]\tWarning anotando ubicaciones nodo {nodo_idx}: {e}")
+                plt.suptitle(f'NODO: {nodo_idx}')
                 plt.show()
             except Exception as e:
                 print(f"[DBG]\tError al plotear nodo {nodo_idx}: {e}")
@@ -101,6 +130,21 @@ def solve_routing(n, m, nodos_coordenadas, paquetes_coordenadas, assignments, kv
                         plot_solution(res.best, model.data(), ax=ax)
                     except Exception:
                         pass
+                try:
+                    # concatenar todas las locations y evitar duplicados
+                    combined = []
+                    seen_xy = set()
+                    for model, _ in models:
+                        for loc in getattr(model, "locations", []):
+                            x = getattr(loc, "x", None)
+                            y = getattr(loc, "y", None)
+                            if (x, y) in seen_xy or x is None or y is None:
+                                continue
+                            seen_xy.add((x, y))
+                            combined.append(loc)
+                    annotate_locations(ax, combined)
+                except Exception as e:
+                    print(f"[DBG]\tWarning anotando ubicaciones global: {e}")
                 plt.title('Todas las rutas')
                 plt.show()
             except Exception as e:
