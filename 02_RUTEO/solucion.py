@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 PACKAGE_SOLVER_VERBOSE      = False     # Mensajes de librería PuLP
 ROUTING_SOLVER_VERBOSE      = False     # Mensajes de librería pyVRP
 ROUTING_SOLVER_MAX_RUNTIME  = 1         # 1 segundo por nodo
-PLOTTING_NODE_ROUTES        = True     # Rutas de cada nodo
+PLOTTING_NODE_ROUTES        = False     # Rutas de cada nodo
 PLOTTING_ALL_ROUTES         = False     # Rutas de todos los nodos
 ALPHA_EVALUATION_VERBOSE    = False      # Mensajes búsqueda del alpha óptimo
 alpha_values = np.linspace(start=0, stop=2, num=20) # 20 valores en [0, 2] uniformemente espaciados
@@ -31,6 +31,7 @@ def solve_routing(n, m, nodos_coordenadas, paquetes_coordenadas, assignments, kv
     total_routing_cost = 0.0
     vehicles_used = 0
     all_routes = {}
+    all_locations = {}
     for nodo_idx, paquetes in paquetes_por_nodo.items():
         # Si no hay paquetes, saltar
         if len(paquetes) == 0:
@@ -41,11 +42,11 @@ def solve_routing(n, m, nodos_coordenadas, paquetes_coordenadas, assignments, kv
 
         model = Model()
         model.add_vehicle_type(num_available=num_veh, capacity=kv, fixed_cost=cfv)
-        model.add_depot(x=nodos_coordenadas[nodo_idx][0], y=nodos_coordenadas[nodo_idx][1])
+        model.add_depot(x=nodos_coordenadas[nodo_idx][0], y=nodos_coordenadas[nodo_idx][1], name=f'{nodo_idx if nodo_idx < n else "-1"}')
 
         # crear clientes (delivery=1)
         for j in paquetes:
-            model.add_client(x=paquetes_coordenadas[j][0], y=paquetes_coordenadas[j][1], delivery=1)
+            client = model.add_client(x=paquetes_coordenadas[j][0], y=paquetes_coordenadas[j][1], delivery=1, name=f'{j}')
 
         # agregar aristas (distancias)
         for frm in model.locations:
@@ -73,6 +74,10 @@ def solve_routing(n, m, nodos_coordenadas, paquetes_coordenadas, assignments, kv
         if not nodo_idx in all_routes.keys():
             all_routes[nodo_idx] = []
         all_routes[nodo_idx] += routes
+
+        if not nodo_idx in all_locations.keys():
+            all_locations[nodo_idx] = []
+        all_locations[nodo_idx] += model.locations
 
         total_routing_cost += float(route_cost)
         # PLOT rutas por nodo
@@ -105,7 +110,7 @@ def solve_routing(n, m, nodos_coordenadas, paquetes_coordenadas, assignments, kv
 
     total_routing_cost += vehicles_used * cvp
 
-    return total_routing_cost, all_routes
+    return total_routing_cost, all_routes, all_locations
 
 
 if __name__ == '__main__':
@@ -186,14 +191,15 @@ if __name__ == '__main__':
                 key = tuple(assignments)
                 if key not in unique_assignments:
                     costo_asignacion = result['costo_asignacion']
-                    costo_ruteo, all_routes = solve_routing(n, m, nodos_coordenadas, paquetes_coordenadas, assignments, kv, cfv, cvp)
+                    costo_ruteo, all_routes, locations = solve_routing(n, m, nodos_coordenadas, paquetes_coordenadas, assignments, kv, cfv, cvp)
                     costo_total = costo_asignacion + costo_ruteo
                     unique_assignments[key] = {
                         'alphas': [alpha],
                         'costo_asignacion': costo_asignacion,
                         'costo_ruteo': costo_ruteo,
                         'costo_total': costo_total,
-                        'routes': all_routes
+                        'routes': all_routes,
+                        'locations': locations
                     }
                     if ALPHA_EVALUATION_VERBOSE:
                         print(f"[NEW] alpha={alpha:.6g} -> (costo_asign={costo_asignacion:.2f}, costo_ruteo={costo_ruteo:.2f})\t\ttotal: {costo_total}")
@@ -209,11 +215,11 @@ if __name__ == '__main__':
             len(best_all_routes)
 
             for node, routes in best_all_routes.items():
-                if node == n:
-                    print(-1, len(routes))
-                else:
-                    print(node, len(routes))
-                for route in routes:
-                    print(*route.visits())
+                locations = unique_assignments[best]['locations']
+                node_name = locations[node][0].name
+                routes_named = [[locations[node][visit].name for visit in route.visits()] for route in routes]
+                print(node_name, len(routes))
+                for route in routes_named:
+                    print(*route)
             caso += 1
             n, m = map(int, f.readline().strip().split())
