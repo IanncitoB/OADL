@@ -8,25 +8,34 @@ from pyvrp.stop import MaxRuntime
 from pyvrp.plotting import plot_coordinates, plot_solution
 import matplotlib.pyplot as plt
 
+# Hiperparámetros
+PACKAGE_SOLVER_VERBOSE      = False     # Mensajes de librería PuLP
+ROUTING_SOLVER_VERBOSE      = False     # Mensajes de librería pyVRP
+ROUTING_SOLVER_MAX_RUNTIME  = 5         # 5 segundos por nodo
+PLOTTING_NODE_ROUTES        = False     # Rutas de cada nodo
+PLOTTING_ALL_ROUTES         = False     # Rutas de todos los nodos
+alpha_values = np.linspace(start=0, stop=2, num=20) # 20 valores en [0, 2] uniformemente espaciados
+
 def solve_routing(n, m, nodos_coordenadas, paquetes_coordenadas, assignments, kv, cfv, cvp):
+    assert n + 1 == len(nodos_coordenadas)
+    assert m == len(paquetes_coordenadas)
     # Agrupamos los paquetes por nodo asignado
     paquetes_por_nodo = {}
     for j, i in enumerate(assignments):
-        if i is None:
-            continue
         # i == -1 => Service Center (último nodo)
         node_idx = i if i >= 0 else n
         paquetes_por_nodo.setdefault(node_idx, []).append(j)
 
     models = []
     total_routing_cost = 0.0
+    all_routes = []
     for nodo_idx, paquetes in paquetes_por_nodo.items():
         # Si no hay paquetes, saltar
         if len(paquetes) == 0:
             continue
 
-        # número mínimo de vehículos a considerar
-        num_veh = max(1, (len(paquetes) + kv - 1) // kv)
+        # número máximo de vehículos a considerar
+        num_veh = len(paquetes)
 
         model = Model()
         model.add_vehicle_type(num_available=num_veh, capacity=kv, fixed_cost=cfv)
@@ -42,7 +51,7 @@ def solve_routing(n, m, nodos_coordenadas, paquetes_coordenadas, assignments, kv
                 d = math.hypot(frm.x - to.x, frm.y - to.y)
                 model.add_edge(frm, to, distance=d * cvp)
 
-        res = model.solve(stop=MaxRuntime(10), display=False)  # 10 segundos por nodo
+        res = model.solve(stop=MaxRuntime(ROUTING_SOLVER_MAX_RUNTIME), display=ROUTING_SOLVER_VERBOSE)
         if res is None or getattr(res, "best", None) is None:
             print(f"[DBG]\tNo se encontró solución de ruteo para el nodo {nodo_idx}.")
             continue
@@ -72,87 +81,58 @@ def solve_routing(n, m, nodos_coordenadas, paquetes_coordenadas, assignments, kv
         except Exception:
             routes = None
 
-        # --- contar vehículos usados y tratar rutas ---
-        vehicles_used = num_veh  # fallback
-        route_cost = None
-        try:
-            # intentar obtener costo directamente (si existe)
-            route_cost = getattr(best, "cost", None)
-            if route_cost is None:
-                route_cost = getattr(best, "objective", None)
-            if route_cost is None:
-                route_cost = getattr(best, "value", None)
-            # si encontramos rutas iterable, intentar contar vehículos usados
-            if routes is not None:
-                count = 0
-                for r in routes:
-                    # r puede ser objeto con .nodes, .visits, o ser lista
-                    nodes = None
-                    if hasattr(r, "nodes"):
-                        nodes = getattr(r, "nodes")
-                    elif hasattr(r, "visits"):
-                        nodes = getattr(r, "visits")
-                    elif isinstance(r, (list, tuple)):
-                        nodes = r
-                    # determinar longitud
-                    l = len(nodes) if nodes is not None else None
-                    # considerar ruta "usada" si tiene más de 2 nodos (depósito + al menos 1 cliente)
-                    if l is not None and l > 2:
-                        count += 1
-                    else:
-                        # si no pudimos evaluar nodes, intentar con len(r) como fallback
-                        try:
-                            if len(r) > 2:
-                                count += 1
-                        except Exception:
-                            pass
-                vehicles_used = max(1, count)
-        except Exception:
-            vehicles_used = num_veh
-
-        if route_cost is not None:
-            try:
-                total_routing_cost += float(route_cost)
-            except Exception:
-                # si no pudimos convertir, fallback a aproximación
-                route_cost = None
-
+        # intentar obtener costo directamente (si existe)
+        route_cost = getattr(best, "cost", None)
         if route_cost is None:
-            # aproximación: costo fijo por vehículos usados + cvp * 2*sum distancia depot->client
-            total_routing_cost += vehicles_used * cfv
-            depot_x, depot_y = nodos_coordenadas[nodo_idx]
-            approx_dist = sum(math.hypot(paquetes_coordenadas[j][0]-depot_x, paquetes_coordenadas[j][1]-depot_y) for j in paquetes)
-            total_routing_cost += cvp * 2 * approx_dist
+            route_cost = getattr(best, "objective", None)
+        if route_cost is None:
+            route_cost = getattr(best, "distance_cost", None)
+        if route_cost is None:
+            route_cost = getattr(best, "distance", None)
+        if route_cost is None:
+            route_cost = getattr(best, "value", None)
+        
+        route_cost = route_cost() if callable(route_cost) else route_cost
+        
+        all_routes += routes
 
-        # try:
-        #     _, axs = plt.subplots(1, 2, figsize=(16, 8))
-        #     plot_coordinates(model.data(), ax=axs[0])
-        #     plot_solution(res.best, model.data(), ax=axs[1])
-        #     plt.show()
-        # except Exception as e:
-        #     print(f"[DBG]\tError al plotear nodo {nodo_idx}: {e}")
+        total_routing_cost += float(route_cost)
+        # PLOT rutas por nodo
+        if PLOTTING_NODE_ROUTES:
+            try:
+                _, axs = plt.subplots(1, 2, figsize=(16, 8))
+                plot_coordinates(model.data(), ax=axs[0])
+                plot_solution(res.best, model.data(), ax=axs[1])
+                plt.title(f'NODO: {nodo_idx}')
+                plt.show()
+            except Exception as e:
+                print(f"[DBG]\tError al plotear nodo {nodo_idx}: {e}")
 
     # plot all routes together
-    if len(models) > 0:
-        try:
-            _, ax = plt.subplots(1, 1, figsize=(8, 8))
-            for model, res in models:
-                try:
-                    plot_solution(res.best, model.data(), ax=ax)
-                except Exception:
-                    pass
-            plt.show()
-        except Exception as e:
-            print(f"[DBG]\tError al plotear todas las rutas: {e}")
-    else:
-        print("[DBG]\tNo se encontró solución de ruteo para ningún nodo.")
+    if PLOTTING_ALL_ROUTES:
+        if len(models) > 0:
+            try:
+                _, ax = plt.subplots(1, 1, figsize=(8, 8))
+                for model, res in models:
+                    try:
+                        plot_solution(res.best, model.data(), ax=ax)
+                    except Exception:
+                        pass
+                plt.title('Todas las rutas')
+                plt.show()
+            except Exception as e:
+                print(f"[DBG]\tError al plotear todas las rutas: {e}")
+        else:
+            print("[DBG]\tNo se encontró solución de ruteo para ningún nodo.")
 
-    print(f"[DBG] Costo de ruteo (aprox): {total_routing_cost:.2f}")
-    return total_routing_cost
+    vehicles_used = len(all_routes)
+    total_routing_cost += vehicles_used * cvp
+
+    return total_routing_cost, vehicles_used, all_routes
 
 
 if __name__ == '__main__':
-    input_file = './02_RUTEO/ejemplo_problema copy.in'
+    input_file = './02_RUTEO/ejemplo_problema.in'
     if len(sys.argv) > 1:
         input_file = sys.argv[1]
     output_file = input_file.replace('.in', '.out')
@@ -206,26 +186,51 @@ if __name__ == '__main__':
 
             print(f'Caso {caso}')
 
-            solver = PackageSolver(
-                nodos=nodos,
-                paquetes_coordenadas=paquetes_coordenadas,
-                cobertura=cobertura,
-                kv=kv, cfv=cfv, cvp=cvp,
-                solver_msg=True,
-                alpha=3
-            )
-            result = solver.solve()
-            if result['status'] not in ('Optimal', 'Feasible'):
-                print("[DBG]\tNo se encontró solución óptima.")
-            else:
-                print(f"Costo (asignación + aproximación VRP): {result['costo_minimo']:.2f}")
+            unique_assignments = {}
+            best = None
+            for alpha in alpha_values:
+                alpha = float(alpha)
+                solver = PackageSolver(
+                    nodos=nodos,
+                    paquetes_coordenadas=paquetes_coordenadas,
+                    cobertura=cobertura,
+                    kv=kv, cfv=cfv, cvp=cvp,
+                    solver_msg=PACKAGE_SOLVER_VERBOSE,
+                    alpha=alpha
+                )
+
+                result = solver.solve()
+                status = result['status']
+                if result['status'] not in ('Optimal', 'Feasible'):
+                    print(f"[DBG]\talpha={alpha:.6g}: no se obtuvo solución ({status}).")
+                    continue
+            
+                # print(result)
                 assignments = result['assignments']
-                print(f'Assignments: {assignments}')
-                print(f'Vehículos estimados por nodo: {result["vehicle_count"]}')
+                key = tuple(assignments)
+                if key not in unique_assignments:
+                    costo_asignacion = result['costo_asignacion']
+                    costo_ruteo, vehicles_used, routes = solve_routing(n, m, nodos_coordenadas, paquetes_coordenadas, assignments, kv, cfv, cvp)
+                    costo_total = costo_asignacion + costo_ruteo
+                    unique_assignments[key] = {
+                        'alphas': [alpha],
+                        'costo_asignacion': costo_asignacion,
+                        'costo_ruteo': costo_ruteo,
+                        'costo_total': costo_total,
+                        'vehicles_used': vehicles_used,
+                        'routes': routes
+                    }
+                    print(f"[NEW] alpha={alpha:.6g} -> (costo_asign={costo_asignacion:.2f}, costo_ruteo={costo_ruteo:.2f})\t\ttotal: {costo_total}")
+                    if best is None or unique_assignments[best]['costo_total'] > costo_total:
+                        print('Actualizado best')
+                        best = key
+                else:
+                    unique_assignments[key]['alphas'].append(alpha)
+                    print(f"[HIT] alpha={alpha:.6g} -> ({len(unique_assignments[key]['alphas'])} alphas)\t\t\t\t\ttotal: {unique_assignments[key]['costo_total']}")
 
-                # Con la asignación, resolver el problema de ruteo real por nodo
-                routing_cost = solve_routing(n, m, nodos_coordenadas, paquetes_coordenadas, assignments, kv, cfv, cvp)
-                print(f"Costo total aproximado (asignación + ruteo real): {result['costo_minimo'] + routing_cost:.2f}")
+            print(f'BEST {best}: {unique_assignments[best]}')
 
+            print(unique_assignments[best]['costo_total'])
+            print()
             caso += 1
             n, m = map(int, f.readline().strip().split())

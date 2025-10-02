@@ -13,11 +13,11 @@ class PackageSolver:
     nodos: lista de dicts {'capacidad': int, 'costo': float, 'posicion': (x,y)}
            Debe incluir el Service Center como último elemento (índice n).
     paquetes_coordenadas: lista de tuplas (x,y) de longitud m
-    cobertura: array booleano shape (n+1, m)
+    cobertura: array booleano: shape (n+1, m)
     kv: capacidad de cada vehículo (paquetes por vehículo)
     cfv: costo fijo por vehículo
     cvp: costo variable por distancia por paquete
-    alpha: hiperparámetro en (0, 1]. Penalización por elección de nodos lejanos al cliente
+    alpha: hiperparámetro. Penalización por elección de nodos lejanos al cliente
     """
     def __init__(
         self,
@@ -52,6 +52,10 @@ class PackageSolver:
         self.status = None
 
     def _distance(self, nodo_idx: int, paquete_idx: int) -> float:
+        """
+        Función distancia euclidiana entre nodo distribuidor y nodo cliente. Únicamente utilizada 
+        como métrica para calcular el costo de ruteo en el peor caso
+        """
         nx, ny = self.nodos[nodo_idx]['posicion']
         px, py = self.paquetes[paquete_idx]
         return math.hypot(nx - px, ny - py)
@@ -66,12 +70,13 @@ class PackageSolver:
         v = LpVariable.dicts("v", (i for i in range(self.n + 1)), lowBound=0, cat=LpInteger)
 
         # Objetivo:
-        #   costo asignacion nodo (por paquete) + costo fijo por vehiculo + costo variable por distancia
+        # costo asignacion nodo (por paquete) + costo fijo por vehiculo + costo variable por distancia
         costo_asignacion = lpSum(self.nodos[i]['costo'] * lpSum(b[i, j] for j in range(self.m))
                                  for i in range(self.n + 1))
         costo_fijo_vehiculos = lpSum(self.cfv * v[i] for i in range(self.n + 1))
         # En el peor caso, el ruteo resulta de un viaje por paquete (ida y vuelta)
-        # Esta desición entiendo que penaliza enviar paquetes demasiado lejos, salvo que el costo de asignación sea muy bajo y compense
+        # Esta desición busca penalizar los envíos de paquetes demasiado lejos, 
+        # salvo que el costo de asignación sea muy bajo y se compense el costo total
         # La elección del alpha es crucial para que relaje esta restricción y pueda explorar asignaciones lejanas
         costo_distancias = lpSum(self.cvp * self._distance(i, j) * b[i, j] * 2 * self.alpha
                                  for i in range(self.n + 1) for j in range(self.m))
@@ -87,15 +92,15 @@ class PackageSolver:
         for i in range(self.n + 1):
             modelo += lpSum(b[i, j] for j in range(self.m)) <= self.nodos[i]['capacidad'], f"CapacidadNodo_{i}"
 
-        # Relacion v[i] con paquetes: sum_j b[i,j] <= kv * v[i]
-        for i in range(self.n + 1):
-            modelo += lpSum(b[i, j] for j in range(self.m)) <= self.kv * v[i], f"VehiculosSuf_{i}"
-
         # Cobertura
         for i in range(self.n + 1):
             for j in range(self.m):
                 if not self.cobertura[i, j]:
                     modelo += b[i, j] <= 0, f"Cobertura_{i}_{j}"
+
+        # Relacion vehículos/paquetes: los paquetes a entregar tienen que entrar en los vehículos
+        for i in range(self.n + 1):
+            modelo += lpSum(b[i, j] for j in range(self.m)) <= self.kv * v[i], f"VehiculosSuf_{i}"
 
         # Resolver
         solver = PULP_CBC_CMD(msg=self.solver_msg)
@@ -111,6 +116,7 @@ class PackageSolver:
 
         costo_val = float(value(modelo.objective))
 
+        costo_assignments = 0.0
         assignments: List[int] = [-2] * self.m
         for j in range(self.m):
             assigned = None
@@ -118,6 +124,7 @@ class PackageSolver:
                 val = value(b[(i, j)])
                 if val is not None and round(val) == 1:
                     assigned = i
+                    costo_assignments += self.nodos[i]['costo']
                     break
             if assigned is None:
                 assignments[j] = None
@@ -126,4 +133,5 @@ class PackageSolver:
 
         vehicle_count = [int(round(value(v[i]))) if value(v[i]) is not None else 0 for i in range(self.n + 1)]
 
-        return {"status": self.status, "costo_minimo": costo_val, "assignments": assignments, "vehicle_count": vehicle_count}
+
+        return {"status": self.status, "costo_asignacion": costo_assignments, "costo_aproximado": costo_val, "assignments": assignments, "vehicle_count": vehicle_count}

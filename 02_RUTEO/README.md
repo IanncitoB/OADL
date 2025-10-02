@@ -65,3 +65,78 @@ El archivo problema2.out debe contener un bloque de salida para cada instancia, 
 
 ## Solución:
 
+La solución se basa fuertemente en el ejercicio anterior ```01_PLE```.
+
+### Asignación:
+
+Para asignar los paquetes a cada nodo proveedor utilizamos la librería ```PuLP``` teniendo en cuenta:
+
+- ```Nuevo``` Hiperparámetro:
+    - $\alpha$: Busca penalizar los envíos asignados que estén lejos del nodo. 
+        - Cuando $\alpha = 0$ la minimización solamente tiene en cuenta los costos de asignación y la cantidad de vehículos utilizados
+        - Entre más grande sea $\alpha$, se le da mayor importancia al ruteo.  
+- Variables:
+    - $b_{ij} = 1$ sii el nodo i entrega el paquete j. Binaria
+    - ```Nueva``` $v_i$ cantidad de vehículos usados por nodo i. Entera
+
+- Costos:
+    - Asignación: 
+
+        $\sum_{i \in I^+}{
+            \sum_{j \in J}{
+                b_{ij}*c_i
+            }
+        }$
+    - ```Nuevo``` Costo fijo vehículos:
+
+        $\sum_{i \in I^+}{
+            cvf * v_i
+        }$
+    - ```Nuevo``` Distancias (ruteo):
+
+        $\sum_{i \in I^+}{
+            \sum_{j \in J}{
+                cvp * dist(i,j) * b_{ij} * 2 * \alpha
+            }
+        }$
+
+        Este costo está asociado al peor caso: cada nodo realiza ida y vuelta a cada paquete asignado, porque sino habría que calcular la mejor ruta para cada exploración de asignaciones (computacionalmente irrealizable)
+
+- Restricciones:
+    - Cada paquete se entrega por exactamente 1 nodo:
+
+        $1 = \sum_{i \in I^+}(b_{ij}) \\ \forall j \in J$
+
+    - Cada nodo no entrega más paquetes que su capacidad lo permite:
+
+        $k_i \geq \sum_{j \in J}(b_{ij}) \\ \forall i \in I^+$
+
+    - Solo se entregan paquetes dentro del área cubierta por el nodo:
+
+        $b_{ij} \leq a_{ij} \\ \forall i \in I^+ \\ \forall j \in J$
+    
+    - ```Nueva``` cada nodo entrega tantos paquetes como sean posibles distribuirlos en los vehículos contratados:
+
+        $\sum_{j \in J}(b_{ij}) \leq kv * v_i \\ \forall i \in I^+$
+
+
+### Ruteo:
+
+Para una asignación dada (nodo proveedor -> cliente/paquete), debemos obtener las rutas que realizará cada vehículo.
+
+Utilizando la librería ```pyvrp```, resolvemos el ruteo de cada nodo agregando:
+
+- Vehículos:
+    - Disponibles: infinitos (```len(paquetes) a entregar```)
+    - Capacidad: ```kv``` dada en input
+    - Costo Fijo: ```cfv``` dado en input
+- Depósitos:
+    - Único depósito (el nodo) con sus coordenadas
+- Clientes:
+    - Coordenadas X, Y de cada paquete a entregar por ese nodo
+    - Delivery: ```1```. Cada cliente espera exactamente 1 paquete.
+- Aristas:
+    - Grafo completo de todas las ```locations``` (depósitos + clientes)
+    - Cada arista tiene peso ```distancia * cvp```
+
+Opcionalmente se pueden graficar las rutas de cada nodo y de todos los nodos en simultáneo.
